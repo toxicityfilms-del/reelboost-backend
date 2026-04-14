@@ -1,4 +1,5 @@
 const { validationResult } = require('express-validator');
+const OpenAI = require('openai');
 const { analyzeViralScore } = require('../services/viralScoreService');
 
 const NICHE_RULES = [
@@ -106,6 +107,132 @@ function dynamicAudioSuggestion(niche, mood) {
   return map[mood] || map['high-energy'];
 }
 
+function safeJsonParse(text) {
+  let t = String(text || '').trim();
+  if (t.startsWith('```')) {
+    t = t.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  }
+  try {
+    return JSON.parse(t);
+  } catch {
+    return {};
+  }
+}
+
+function normalizeBetterHashtags(raw, source, niche) {
+  let list = [];
+  if (Array.isArray(raw)) {
+    list = raw.map(String);
+  } else if (typeof raw === 'string') {
+    list = raw
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  const ensureHash = (s) => {
+    const t = String(s || '').trim();
+    if (!t) return '';
+    return t.startsWith('#') ? t : `#${t.replace(/^#/, '')}`;
+  };
+  const deduped = [...new Set(list.map(ensureHash).filter(Boolean))];
+  if (deduped.length >= 10) return deduped.slice(0, 15);
+
+  const seed = String(source || niche || 'reels')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+    .slice(0, 20) || 'reels';
+  const fallback = [
+    `#${seed}`,
+    `#${seed}tips`,
+    `#${seed}reels`,
+    `#${seed}content`,
+    '#reels',
+    '#viral',
+    '#fyp',
+    '#instagram',
+    '#explorepage',
+    '#contentcreator',
+    '#socialmedia',
+    `#${niche}`,
+  ].map(ensureHash);
+  return [...new Set([...deduped, ...fallback])].slice(0, 15);
+}
+
+function fallbackOpenAiFields(cap, tags, niche, suggestions) {
+  const source = `${cap} ${tags}`.trim() || 'your post';
+  const hook = `Stop scrolling: ${source.slice(0, 42)}${source.length > 42 ? '…' : ''}`;
+  const improvedCaption = `${cap || 'Your idea'}\n\nSave this post and share it with a friend who needs this.`;
+  return {
+    improvedCaption,
+    betterHashtags: normalizeBetterHashtags(tags, source, niche),
+    hook,
+    engagementTips:
+      Array.isArray(suggestions) && suggestions.length
+        ? suggestions.slice(0, 4)
+        : ['Use a stronger first line.', 'Add a CTA to comment or save.', 'Use 10-15 focused hashtags.'],
+  };
+}
+
+async function generateOpenAiViralFields({ caption, hashtags, niche }) {
+  // eslint-disable-next-line no-console
+  console.log('OPENAI KEY:', process.env.OPENAI_API_KEY);
+  const key = String(process.env.OPENAI_API_KEY || '').trim();
+  if (!key) {
+    return fallbackOpenAiFields(caption, hashtags, niche, []);
+  }
+
+  const client = new OpenAI({ apiKey: key });
+  const prompt = `You are an Instagram growth strategist.
+Input:
+- Caption: "${caption || ''}"
+- Hashtags: "${hashtags || ''}"
+- Niche: "${niche || 'lifestyle'}"
+
+Return ONLY valid JSON with keys:
+{
+  "improvedCaption": "string",
+  "betterHashtags": ["#tag1", "... 10 to 15 tags total ..."],
+  "hook": "string",
+  "engagementTips": ["tip1", "tip2", "tip3", "tip4"]
+}
+
+Rules:
+- improvedCaption must be punchy and conversion-oriented.
+- betterHashtags must be 10-15 focused hashtags.
+- hook should be a short viral opener.
+- engagementTips should be 3-4 concise practical bullets.`;
+
+  try {
+    // eslint-disable-next-line no-console
+    console.log('Calling OpenAI...');
+    const completion = await client.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: 'Output JSON only.' },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0.7,
+      max_tokens: 700,
+    });
+    const raw = completion.choices?.[0]?.message?.content || '{}';
+    const parsed = safeJsonParse(raw);
+    const tips = Array.isArray(parsed.engagementTips) ? parsed.engagementTips.map(String).slice(0, 4) : [];
+    const result = {
+      improvedCaption: String(parsed.improvedCaption || '').trim() || fallbackOpenAiFields(caption, hashtags, niche, []).improvedCaption,
+      betterHashtags: normalizeBetterHashtags(parsed.betterHashtags, `${caption} ${hashtags}`, niche),
+      hook: String(parsed.hook || '').trim() || fallbackOpenAiFields(caption, hashtags, niche, []).hook,
+      engagementTips: tips.length ? tips : fallbackOpenAiFields(caption, hashtags, niche, []).engagementTips,
+    };
+    // eslint-disable-next-line no-console
+    console.log('OpenAI response:', result);
+    return result;
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error('OpenAI ERROR:', error.message);
+    return fallbackOpenAiFields(caption, hashtags, niche, []);
+  }
+}
+
 async function analyze(req, res, next) {
   try {
     const errors = validationResult(req);
@@ -119,6 +246,11 @@ async function analyze(req, res, next) {
     const source = `${cap} ${tags}`;
     const niche = detectNiche(source);
     const mood = detectMood(source);
+    const ai = await generateOpenAiViralFields({
+      caption: cap,
+      hashtags: tags,
+      niche,
+    });
     return res.json({
       success: true,
       data: {
@@ -126,6 +258,10 @@ async function analyze(req, res, next) {
         niche,
         bestTime: dynamicBestTimeByNiche(niche, mood),
         audioSuggestion: dynamicAudioSuggestion(niche, mood),
+        improvedCaption: ai.improvedCaption,
+        betterHashtags: ai.betterHashtags,
+        hook: ai.hook,
+        engagementTips: ai.engagementTips,
       },
     });
   } catch (e) {
