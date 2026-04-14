@@ -7,15 +7,14 @@ async function analyze(req, res, next) {
     if (!errors.isEmpty()) {
       return res.status(400).json({ success: false, errors: errors.array() });
     }
-    const { caption, hashtags } = req.body;
-    const data = analyzeViralScore(caption, hashtags || '');
     return res.json({
       success: true,
       data: {
-        ...data,
-        niche: 'fitness',
-        bestTime: '7-9 PM',
-        audioSuggestion: 'Believer - Imagine Dragons',
+        score: 999,
+        niche: 'debug-business',
+        bestTime: 'debug-11PM',
+        audioSuggestion: 'debug-song',
+        suggestions: ['debug'],
       },
     });
   } catch (e) {
