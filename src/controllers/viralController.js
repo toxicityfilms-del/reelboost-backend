@@ -9,7 +9,15 @@ async function analyze(req, res, next) {
     }
     const { caption, hashtags } = req.body;
     const data = analyzeViralScore(caption, hashtags || '');
-    return res.json({ success: true, data });
+    return res.json({
+      success: true,
+      data: {
+        ...data,
+        niche: 'fitness',
+        bestTime: '7-9 PM',
+        audioSuggestion: 'Believer - Imagine Dragons',
+      },
+    });
   } catch (e) {
     return next(e);
   }
