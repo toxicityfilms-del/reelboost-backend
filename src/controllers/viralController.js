@@ -1,6 +1,9 @@
 const { validationResult } = require('express-validator');
 const OpenAI = require('openai');
 const { analyzeViralScore } = require('../services/viralScoreService');
+const User = require('../models/User');
+
+const FREE_DAILY_LIMIT = 3;
 
 const NICHE_RULES = [
   { niche: 'fitness', re: /\b(fitness|gym|workout|muscle|fat ?loss|cardio|protein|bodybuilding|exercise)\b/i },
@@ -242,15 +245,41 @@ async function analyze(req, res, next) {
     const { caption, hashtags } = req.body;
     const cap = String(caption || '');
     const tags = String(hashtags || '');
+    const userId = req.user?.sub;
+    const user = await User.findById(userId).select('isPremium viralAnalyzeDaily');
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'User not found' });
+    }
+    const isPremium = user.isPremium === true;
+    const today = new Date().toISOString().slice(0, 10);
+
+    if (!isPremium) {
+      if (!user.viralAnalyzeDaily || user.viralAnalyzeDaily.day !== today) {
+        user.viralAnalyzeDaily = { day: today, count: 0 };
+      }
+      if (user.viralAnalyzeDaily.count >= FREE_DAILY_LIMIT) {
+        return res.status(403).json({
+          success: false,
+          code: 'LIMIT_REACHED',
+          message: 'Daily limit reached. Upgrade to Pro 🚀',
+        });
+      }
+      user.viralAnalyzeDaily.count += 1;
+      await user.save();
+    }
+
     const data = analyzeViralScore(cap, tags);
     const source = `${cap} ${tags}`;
     const niche = detectNiche(source);
     const mood = detectMood(source);
-    const ai = await generateOpenAiViralFields({
-      caption: cap,
-      hashtags: tags,
-      niche,
-    });
+    let ai = null;
+    if (isPremium) {
+      ai = await generateOpenAiViralFields({
+        caption: cap,
+        hashtags: tags,
+        niche,
+      });
+    }
     return res.json({
       success: true,
       data: {
@@ -258,10 +287,14 @@ async function analyze(req, res, next) {
         niche,
         bestTime: dynamicBestTimeByNiche(niche, mood),
         audioSuggestion: dynamicAudioSuggestion(niche, mood),
-        improvedCaption: ai.improvedCaption,
-        betterHashtags: ai.betterHashtags,
-        hook: ai.hook,
-        engagementTips: ai.engagementTips,
+        ...(isPremium && ai
+          ? {
+              improvedCaption: ai.improvedCaption,
+              betterHashtags: ai.betterHashtags,
+              hook: ai.hook,
+              engagementTips: ai.engagementTips,
+            }
+          : {}),
       },
     });
   } catch (e) {

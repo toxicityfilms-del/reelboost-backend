@@ -53,6 +53,10 @@ const userSchema = new mongoose.Schema(
       /** When true, ad reward grants are rejected until next UTC day */
       adRewardsBlockedSuspicious: { type: Boolean, default: false },
     },
+    viralAnalyzeDaily: {
+      day: { type: String, default: '' },
+      count: { type: Number, default: 0, min: 0 },
+    },
   },
   { timestamps: true }
 );
