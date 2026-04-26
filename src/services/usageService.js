@@ -6,7 +6,7 @@ const {
   SUSPICIOUS_INVALID_AD_THRESHOLD,
 } = require('../config/usageEnv');
 
-const FREE_POST_ANALYZE_DAILY = 5;
+const FREE_POST_ANALYZE_DAILY = 3;
 const MAX_REWARD_CLAIM_IDS_PER_DAY = 20;
 const MAX_REWARD_COMPLETION_AGE_MS = 15 * 60 * 1000;
 
